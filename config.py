@@ -44,6 +44,13 @@ OLLAMA_CHAT_MODEL: str = "llama3.1"  # change to any model pulled in Ollama
 CHUNK_MAX_TOKENS: int = 512
 CHUNK_OVERLAP_TOKENS: int = 50
 
+# Phase 3 — context stitching for non-text chunks (tables, figures, equations).
+# Words of surrounding prose stitched in before and after each non-text element.
+CONTEXT_WORDS: int = 50
+# Table Markdown is capped at this many chars before context is appended,
+# ensuring context snippets are never silently cut by the Milvus VARCHAR limit.
+MAX_TABLE_MARKDOWN_CHARS: int = 6_000
+
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
