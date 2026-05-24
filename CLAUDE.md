@@ -612,7 +612,30 @@ python main.py --ingest --chat
 
 ---
 
-## 21. Known Issues / Notes
+## 21. Git Repository
+
+**Remote:** `git@github.com:domingoran/academic_rag.git`  
+**Branches:** `main` (stable releases) · `dev` (active development)
+
+```bash
+# Day-to-day work happens on dev
+git checkout dev
+git add -A && git commit -m "your message" && git push
+
+# Merge dev → main when a phase is complete
+git checkout main && git merge dev && git push
+git checkout dev   # switch back to keep working
+
+# Clone fresh (gets main by default; switch to dev to develop)
+git clone git@github.com:domingoran/academic_rag.git
+git checkout dev
+```
+
+**Not tracked** (see `.gitignore`): `.venv/`, `data/papers/*`, `data/bm25_index.pkl`, `data/metadata.json`, `__pycache__/`.
+
+---
+
+## 22. Known Issues / Notes
 
 - **C: drive space**: Docker volumes must stay on the WSL filesystem (`~/milvus-volumes/`). If Milvus crashes with `Storage backend has reached its minimum free drive threshold`, the volumes ended up on `/mnt/c/`. Fix: `docker compose down && rm -rf ./volumes && docker compose up -d` (the compose file already points to `~/milvus-volumes/`).
 - **pymilvus deprecation warnings**: The ORM-style `Collection`/`connections` API is deprecated in pymilvus 3.x. The codebase already uses `MilvusClient` — ignore any warnings from third-party libs.
