@@ -76,40 +76,12 @@ def _estimate_tokens(text: str) -> int:
     return int(len(text.split()) / 0.75)
 
 
-def _split_text(text: str, max_tokens: int, overlap_tokens: int) -> List[str]:
-    """
-    Split *text* into word-level chunks that stay under *max_tokens*.
-    Adjacent chunks share *overlap_tokens* words for context continuity.
-    """
-    words = text.split()
-    words_per_chunk = max(1, int(max_tokens * 0.75))
-    overlap_words   = max(0, int(overlap_tokens * 0.75))
-
-    if len(words) <= words_per_chunk:
-        return [text] if text.strip() else []
-
-    chunks: List[str] = []
-    start = 0
-    while start < len(words):
-        end        = min(start + words_per_chunk, len(words))
-        chunk_text = " ".join(words[start:end]).strip()
-        if chunk_text:
-            chunks.append(chunk_text)
-        if end == len(words):
-            break
-        start = end - overlap_words
-        if start < 0:
-            start = 0
-
-    return chunks
-
-
-def _preceding_context(text_buffer: List[str]) -> str:
+def _preceding_context(text_buffer: List[tuple[str, int]]) -> str:
     """
     Return the last config.CONTEXT_WORDS words from the accumulated text
     buffer without modifying it.
     """
-    all_text = " ".join(text_buffer)
+    all_text = " ".join(t for t, _ in text_buffer)
     words    = all_text.split()
     if not words:
         return ""
@@ -213,7 +185,9 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
     """
     chunks: List[Chunk] = []
     current_section = "Abstract"   # reasonable default before first header
-    text_buffer: List[str] = []
+    # Buffer stores (word, page) pairs so each split sub-chunk gets the page
+    # of its first word rather than the page of the flush trigger.
+    text_buffer: List[tuple[str, int]] = []
     last_page: int = 0
 
     # Per-document sequential counters for element IDs
@@ -246,17 +220,37 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
             metadata   = meta if meta is not None else ChunkMetadata(page=page),
         )
 
-    def _flush_text_buffer(section: str, page: int) -> None:
+    def _flush_text_buffer(section: str, fallback_page: int) -> None:
         nonlocal text_buffer
         if not text_buffer:
             return
-        full_text  = " ".join(text_buffer).strip()
+        # Flatten to (word, page) pairs preserving per-element page numbers.
+        word_pages: List[tuple[str, int]] = []
+        for text, pg in text_buffer:
+            for word in text.split():
+                word_pages.append((word, pg))
         text_buffer = []
-        if not full_text:
+        if not word_pages:
             return
-        for sub in _split_text(full_text, config.CHUNK_MAX_TOKENS, config.CHUNK_OVERLAP_TOKENS):
+
+        words_per_chunk = max(1, int(config.CHUNK_MAX_TOKENS * 0.75))
+        # Overlap must be strictly smaller than the chunk size, otherwise
+        # `start = end - overlap_words` fails to advance and loops forever.
+        overlap_words   = max(0, int(config.CHUNK_OVERLAP_TOKENS * 0.75))
+        overlap_words   = min(overlap_words, words_per_chunk - 1)
+        start = 0
+        while start < len(word_pages):
+            end   = min(start + words_per_chunk, len(word_pages))
+            pairs = word_pages[start:end]
+            sub   = " ".join(w for w, _ in pairs).strip()
+            pg    = pairs[0][1] if pairs[0][1] else fallback_page
             if sub:
-                chunks.append(_make_chunk("text", sub, section, page))
+                chunks.append(_make_chunk("text", sub, section, pg))
+            if end == len(word_pages):
+                break
+            start = end - overlap_words
+            if start < 0:
+                start = 0
 
     # ---------------------------------------------------------------------- #
     # Main loop                                                               #
@@ -286,7 +280,7 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
         # ---------------------------------------------------------------- #
         if elem.label in _TEXT_LABELS:
             if elem.text:
-                text_buffer.append(elem.text)
+                text_buffer.append((elem.text, page))
             continue
 
         # ---------------------------------------------------------------- #
@@ -361,14 +355,14 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
             # Example: "…we define attention as <formula> where x is…" should
             # remain a coherent sentence in the enclosing text chunk.
             if elem.text:
-                text_buffer.append(elem.text)
+                text_buffer.append((elem.text, page))
             continue
 
         # ---------------------------------------------------------------- #
         # Anything else with text → treat as generic text                 #
         # ---------------------------------------------------------------- #
         if elem.text:
-            text_buffer.append(elem.text)
+            text_buffer.append((elem.text, page))
 
     # Flush any remaining accumulated text
     _flush_text_buffer(current_section, last_page)

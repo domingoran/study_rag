@@ -10,6 +10,7 @@ It enables:
 - Metadata filtering (year, chunk_type, paper_id) at query time
 - Chat-based interaction with citations
 - Modular LLM backend (Ollama-based models)
+- Automated RAG evaluation dataset generation via embedding clustering and LLM-based Q&A synthesis
 
 The system is designed to start as a local research tool and later evolve into an API-based service.
 
@@ -35,6 +36,25 @@ Embedding Generation — sentence-transformers  (embeddings/embedder.py)
 Milvus Vector Store + flush  (retrieval/vector_store.py)
 ↓
 BM25 Index rebuild + save to disk  (retrieval/bm25_index.py)
+```
+
+### Evaluation Dataset Generation Pipeline (Phase 4a)
+
+```
+All embeddings fetched from Milvus  (vector_store.fetch_all_embeddings())
+↓
+K-Means clustering — K chosen via silhouette-score sweep over [EVAL_CLUSTER_K_MIN, EVAL_CLUSTER_K_MAX]
+↓
+Stratified seed sampling — proportional to each paper_id's chunk count; one seed per cluster slot
+↓
+Nearest-neighbour group assembly — EVAL_CHUNKS_PER_GROUP-1 neighbours per seed (cosine, within cluster, in-memory numpy)
+↓
+Chunk content fetched from Milvus  (vector_store.fetch_by_ids())
+↓
+OllamaClient.generate() — EVAL_QUESTIONS_PER_GROUP Q&A pairs per group (easy / medium / hard)
+                           LLM also returns relevant_chunk_ids for each Q&A pair
+↓
+Accumulate until EVAL_NUM_QUESTIONS total; write data/eval_dataset.json
 ```
 
 ### Query Pipeline (Phase 2)
@@ -72,6 +92,7 @@ ChatEngine  (llm/chat_engine.py)         → answer with inline citations
 | Sparse Retrieval | **rank-bm25** | `BM25Okapi`; persisted to `data/bm25_index.pkl` |
 | Embeddings | **sentence-transformers** | `BAAI/bge-base-en-v1.5` default; configurable |
 | LLM Runtime | **Ollama** | `llama3.1` default; any pulled model works |
+| Clustering | **scikit-learn** | `KMeans` + `silhouette_score` for eval dataset generation |
 | Language | Python 3.11 | WSL2, `.venv` managed by uv |
 
 ---
@@ -247,6 +268,7 @@ HNSW, metric COSINE, M=16, efConstruction=128.
 | `search(query_vec, top_k, expr)` | Returns `List[Chunk]` |
 | `search_with_scores(query_vec, top_k, expr)` | Returns `List[(Chunk, float)]` with cosine scores — used by HybridSearcher |
 | `fetch_all_content()` | Returns all `(chunk_id, content)` pairs, paginated — used to rebuild BM25 |
+| `fetch_all_embeddings()` | Returns all `{"chunk_id", "paper_id", "embedding"}` dicts, paginated — used by EvalDatasetGenerator |
 | `fetch_by_ids(ids)` | Materialise BM25 hits not in vector results |
 | `count()` | Uses `query(count(*))` — accurate even before auto-flush |
 | `reset()` | Drop + recreate collection (empty) |
@@ -356,6 +378,7 @@ pipeline.ingest_folder()          # all PDFs in data/papers/ → auto-rebuilds B
 ```python
 answer, chunks = pipeline.query("What is self-attention?")
 answer, chunks = pipeline.query("results table", expr='chunk_type == "table"')
+chunks = pipeline.retrieve("What is self-attention?", top_k=5)  # retrieval only, no LLM call
 ```
 
 ### Management
@@ -387,17 +410,19 @@ LLM is instructed via system prompt:
 project/
 │
 ├── data/
-│   ├── papers/          ← PDF files (one per paper; filename = paper_id)
-│   ├── metadata.json    ← arXiv metadata (populated by download_papers.py)
-│   └── bm25_index.pkl   ← BM25 index (auto-generated; gitignored)
+│   ├── papers/             ← PDF files (one per paper; filename = paper_id)
+│   ├── metadata.json       ← arXiv metadata (populated by download_papers.py)
+│   ├── bm25_index.pkl      ← BM25 index (auto-generated; gitignored)
+│   ├── eval_dataset.json   ← Q&A evaluation dataset (auto-generated; gitignored)
+│   └── eval_results.json   ← retrieval scoring results (auto-generated; gitignored)
 │
 ├── ingestion/
-│   ├── docling_parser.py    ✅ Phase 1+2 (+ author extraction)
-│   ├── chunker.py           ✅ Phase 1+3 (+ context stitching, smart truncation, element IDs)
+│   ├── docling_parser.py    ✅ Phase 1+2
+│   ├── chunker.py           ✅ Phase 1+3
 │   └── metadata_builder.py  ✅ Phase 1
 │
 ├── retrieval/
-│   ├── vector_store.py      ✅ Phase 1+2 (+ scores, fetch_all, fetch_by_ids, reset)
+│   ├── vector_store.py      ✅ Phase 1+2+4a
 │   ├── bm25_index.py        ✅ Phase 2
 │   ├── hybrid_search.py     ✅ Phase 2
 │   └── reranker.py          ✅ Phase 2
@@ -411,10 +436,18 @@ project/
 │
 ├── core/
 │   ├── schemas.py           ✅ Phase 1
-│   └── pipeline.py          ✅ Phase 1+2
+│   └── pipeline.py          ✅ Phase 1+2+4b (+ retrieve())
 │
-├── config.py                ✅ Phase 1+2 — all tuneable settings here
-├── main.py                  ✅ Phase 1+2 — CLI entry point
+├── evaluation/
+│   ├── eval_dataset_generator.py  ✅ Phase 4a — clustering + Q&A generation
+│   └── eval_scorer.py             ✅ Phase 4b — Recall@K + MRR scoring
+│
+├── notebooks/               ← Jupyter notebooks (gitignored)
+│   ├── clustering_analysis.ipynb    — interactive cluster/t-SNE exploration
+│   └── llm_pair_generation.ipynb   — interactive Q&A generation with Ollama
+│
+├── config.py                ✅ Phase 1+2+4a+4b — all tuneable settings here
+├── main.py                  ✅ Phase 1+2+4a+4b — CLI entry point
 ├── download_papers.py       ✅ arXiv downloader utility
 └── docker-compose.yml       ✅ Milvus standalone stack
 ```
@@ -474,8 +507,29 @@ docker compose down && rm -rf ~/milvus-volumes
 * [x] Improved figure/table/equation handling — context stitching, no-caption figures, smart table truncation, element IDs (`chunker.py`)
 * [ ] Citation quality improvements
 * [ ] Chunk size / overlap optimisation experiments
-* [ ] Quantitative retrieval eval (Recall@K, MRR) with a ground-truth query set
 * [ ] API layer (FastAPI)
+
+### Phase 4a — ✅ COMPLETE: Evaluation Dataset Generation
+
+* [x] `VectorStore.fetch_all_embeddings()` — paginated fetch of all `(chunk_id, paper_id, embedding)` records
+* [x] K-Means clustering with silhouette-score sweep to choose K (`sklearn.cluster.KMeans`)
+* [x] Stratified seed sampling proportional to each paper's chunk share
+* [x] Nearest-neighbour group assembly within each cluster (in-memory cosine, numpy)
+* [x] LLM Q&A generation — EVAL_QUESTIONS_PER_GROUP pairs per group, easy/medium/hard, with `relevant_chunk_ids`
+* [x] JSON output to `data/eval_dataset.json`
+* [x] `--eval-generate` CLI flag in `main.py`
+* [x] All hyperparameters in `config.py`
+* [x] `scikit-learn` and `plotly` added to `requirements.txt`
+* [x] Interactive notebooks in `notebooks/` for clustering exploration and Q&A generation
+
+### Phase 4b — ✅ COMPLETE: Retrieval Evaluation Scoring
+
+* [x] Load `data/eval_dataset.json`
+* [x] `pipeline.retrieve(question, top_k)` — retrieval-only path in `core/pipeline.py` (skips LLM generation)
+* [x] Compare retrieved chunk_ids against `relevant_chunk_ids` from the dataset
+* [x] Compute Recall@K (K=1, 3, 5) and MRR per question; break down by difficulty
+* [x] Output `data/eval_results.json` with per-question and aggregate scores
+* [x] `--eval-score` CLI flag in `main.py`
 
 ---
 
@@ -533,6 +587,16 @@ RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # Set to False to skip reranking (faster, lower quality)
 RERANKER_ENABLED = True
+
+# Evaluation — dataset generation (Phase 4a) and scoring (Phase 4b)
+EVAL_DATASET_PATH        = BASE_DIR / "data" / "eval_dataset.json"
+EVAL_RESULTS_PATH        = BASE_DIR / "data" / "eval_results.json"
+EVAL_NUM_QUESTIONS       = 50    # total Q&A pairs to generate
+EVAL_CLUSTER_K_MIN       = 5     # min K for silhouette-score sweep
+EVAL_CLUSTER_K_MAX       = 35    # max K for silhouette-score sweep
+EVAL_CHUNKS_PER_GROUP    = 4     # chunks per LLM call (1 seed + 3 neighbours)
+EVAL_QUESTIONS_PER_GROUP = 3     # Q&A pairs generated per chunk group
+EVAL_LLM_MODEL           = OLLAMA_CHAT_MODEL   # inherits chat model; override here if needed
 ```
 
 ### A/B testing via config
@@ -561,6 +625,8 @@ numpy
 tqdm
 docling
 sentence-transformers
+scikit-learn
+plotly
 ```
 
 ### Activate environment
@@ -639,6 +705,27 @@ In-chat commands:
 python main.py --ingest --chat
 ```
 
+### Step 5 — Generate evaluation dataset (Phase 4a)
+
+```bash
+python main.py --eval-generate
+```
+
+* Requires at least one paper already ingested in Milvus.
+* Clusters all embeddings, samples stratified seed chunks, calls the LLM to generate Q&A pairs.
+* Writes `data/eval_dataset.json`. Controlled by `EVAL_NUM_QUESTIONS` in `config.py`.
+* Alternatively run interactively via `notebooks/clustering_analysis.ipynb` + `notebooks/llm_pair_generation.ipynb`.
+
+### Step 6 — Score retrieval quality (Phase 4b)
+
+```bash
+python main.py --eval-score
+```
+
+* Requires `data/eval_dataset.json` (produced by Step 5).
+* Runs `pipeline.retrieve()` on every question, computes Recall@1/3/5 and MRR.
+* Prints a summary table and writes `data/eval_results.json`.
+
 ---
 
 ## 21. Git Repository
@@ -660,7 +747,7 @@ git clone git@github.com:domingoran/academic_rag.git
 git checkout dev
 ```
 
-**Not tracked** (see `.gitignore`): `.venv/`, `data/papers/*`, `data/bm25_index.pkl`, `data/metadata.json`, `__pycache__/`.
+**Not tracked** (see `.gitignore`): `.venv/`, `data/papers/*`, `data/bm25_index.pkl`, `data/metadata.json`, `data/eval_dataset.json`, `data/eval_results.json`, `notebooks/`, `__pycache__/`.
 
 ---
 
@@ -672,3 +759,159 @@ git checkout dev
 - **BM25 index cold start**: On first startup after the Phase 2 update (or if `data/bm25_index.pkl` is missing), the pipeline fetches all content from Milvus and builds the index automatically. This adds a few seconds to startup but is silent.
 - **Reranker model download**: First run loads `BAAI/bge-reranker-v2-m3` from HuggingFace (~568 MB). Download is automatic and cached; subsequent startups are instant.
 - **Docling model download**: First run of `parse_pdf()` downloads Docling's internal ML models (layout detection, OCR). This takes a few minutes on first use and is cached afterwards.
+- **Notebooks kernel**: The `notebooks/` Jupyter notebooks require `sys.path.insert(0, '..')` (already present) to resolve project imports from their subdirectory. Launch Jupyter from the project root.
+- **pymilvus + pyarrow conflict**: Calling `DataFrame.to_parquet()` in the same kernel as pymilvus fails with an extension-type registration error. Use CSV instead (already done in the notebooks).
+
+---
+
+## 23. Evaluation Dataset Generation (`evaluation/eval_dataset_generator.py`)
+
+### Overview
+
+`EvalDatasetGenerator` produces a labelled Q&A dataset by mining the existing Milvus collection. It requires no hand-labelling — the LLM creates questions from real indexed content. The dataset is used in Phase 4b to measure retrieval quality (Recall@K, MRR).
+
+### Class API
+
+```python
+generator = EvalDatasetGenerator(vector_store: VectorStore, ollama_client: OllamaClient)
+summary = generator.generate(output_path: Path = EVAL_DATASET_PATH) -> dict
+# Returns {"total_questions": N, "cluster_k": K, "output_path": "..."}
+```
+
+Instantiation does not fetch data. `generate()` runs the full pipeline and writes the JSON file.
+
+### Step 1 — Fetch all embeddings
+
+Call `vector_store.fetch_all_embeddings()` to retrieve every chunk's `chunk_id`, `paper_id`, and `embedding` as a list of dicts. This method must use the same pagination pattern as `fetch_all_content()` (page through all segments using `query()` with `output_fields=["chunk_id", "paper_id", "embedding"]`).
+
+Build two parallel numpy arrays:
+- `embeddings`: shape `(N, EMBEDDING_DIM)` — float32
+- `chunk_ids`: list of N strings (same order as rows)
+- `paper_ids`: list of N strings (same order as rows)
+
+If N < `EVAL_CLUSTER_K_MIN * EVAL_CHUNKS_PER_GROUP`, raise a `ValueError` with a message telling the user to ingest more papers first.
+
+### Step 2 — K-Means clustering with silhouette refinement
+
+Determine optimal K:
+1. Initial heuristic: `k_init = max(EVAL_CLUSTER_K_MIN, min(EVAL_CLUSTER_K_MAX, int(sqrt(N / 2))))`
+2. If N > 5000, subsample 5000 random rows for the silhouette sweep (use these for scoring only; full N is always clustered at the chosen K).
+3. Sweep K from `EVAL_CLUSTER_K_MIN` to `min(EVAL_CLUSTER_K_MAX, N // EVAL_CHUNKS_PER_GROUP)` inclusive.
+4. For each K: fit `KMeans(n_clusters=K, n_init=10, random_state=42)`, compute `silhouette_score` on the subsample.
+5. Choose K with the highest silhouette score.
+6. Fit the final `KMeans` on all N embeddings with the chosen K and store `cluster_labels` (length N array).
+
+Print chosen K and silhouette score to stdout.
+
+### Step 3 — Stratified seed sampling
+
+Determine how many seed chunks to draw: `n_seeds = ceil(EVAL_NUM_QUESTIONS / EVAL_QUESTIONS_PER_GROUP)`.
+
+Stratify by `paper_id`:
+1. Count chunks per paper; compute each paper's fractional share of N.
+2. Allocate `round(share * n_seeds)` seed slots to each paper; adjust rounding so total = `n_seeds`.
+3. For each paper, sample its allocated slots by choosing indices uniformly at random from that paper's chunks, **without replacement** (or with replacement if the paper has fewer chunks than its slot count).
+
+The result is a list of `n_seeds` chunk indices (row positions in the `embeddings` array).
+
+### Step 4 — Nearest-neighbour group assembly
+
+For each seed index:
+1. Find all other indices that share the same cluster label.
+2. Compute cosine similarity between the seed embedding and all same-cluster embeddings using numpy dot product (vectors are already L2-normalised from the embedder, so `dot` equals cosine similarity).
+3. Take the top `EVAL_CHUNKS_PER_GROUP - 1` by similarity (excluding the seed itself).
+4. Group = [seed_chunk_id] + [neighbour_chunk_id, …]; deduplicate by chunk_id.
+
+### Step 5 — Fetch chunk content
+
+For each group, call `vector_store.fetch_by_ids(group_chunk_ids)` to materialise the full `Chunk` objects (including `content`, `paper_id`, `section`, `page`).
+
+### Step 6 — LLM Q&A generation
+
+Build a prompt from the group's chunks and call `ollama_client.generate(prompt)`. Parse the response as JSON.
+
+#### Prompt template
+
+```
+You are an expert researcher creating evaluation questions for a RAG system.
+
+Below are {n} text passages from academic papers. Each passage is identified by its chunk_id.
+
+{for i, chunk in enumerate(chunks, 1)}
+[{i}] chunk_id: {chunk.chunk_id}
+Paper: {chunk.title} ({chunk.year})
+Section: {chunk.section}
+---
+{chunk.content}
+{end for}
+
+Generate exactly {EVAL_QUESTIONS_PER_GROUP} question-answer pairs based ONLY on the information in these passages.
+
+Requirements:
+- Vary difficulty: include "easy" (single-passage factual recall), "medium" (requires connecting two passages), and "hard" (requires inference, comparison, or critical thinking).
+- Ground every answer strictly in the passages — do not hallucinate.
+- For each Q&A pair, list the chunk_id(s) from the passages above that are needed to answer the question.
+
+Return a JSON array only — no markdown, no extra text:
+[
+  {{
+    "question": "...",
+    "answer": "...",
+    "difficulty": "easy|medium|hard",
+    "relevant_chunk_ids": ["<chunk_id>", ...]
+  }}
+]
+```
+
+#### Parsing and error handling
+
+- Parse the LLM response with `json.loads()`.
+- If parsing fails or the response does not match the expected schema, log a warning (`logging.warning`) and skip the group — do not raise.
+- Validate that each item has all four keys; drop any malformed items.
+- Accept partial results from a group (e.g., if 2 of 3 items parsed).
+
+### Step 7 — Accumulate and write output
+
+Collect generated items until `total_collected >= EVAL_NUM_QUESTIONS`. Stop early once the target is reached (do not process remaining groups).
+
+Assign a `question_id` (UUID4) to each item. Add `cluster_id` and `source_paper_ids` derived from the group's chunk objects.
+
+Write `data/eval_dataset.json`:
+
+```json
+{
+  "generated_at": "<ISO-8601 UTC timestamp>",
+  "model": "<EVAL_LLM_MODEL>",
+  "total_questions": 50,
+  "cluster_k": 12,
+  "items": [
+    {
+      "question_id": "<uuid4>",
+      "question": "...",
+      "answer": "...",
+      "difficulty": "easy|medium|hard",
+      "relevant_chunk_ids": ["<chunk_id>", ...],
+      "source_paper_ids": ["<paper_id>", ...],
+      "cluster_id": 3
+    }
+  ]
+}
+```
+
+Print a summary to stdout: total questions generated, K chosen, output path.
+
+### CLI integration (`main.py`)
+
+Add `--eval-generate` flag to the `argparse` parser. When set:
+1. Initialise `vector_store` (no need to start the full pipeline — only `vector_store` and `ollama_client` are needed).
+2. Instantiate `EvalDatasetGenerator(vector_store, ollama_client)`.
+3. Call `generator.generate()` and print the returned summary.
+4. Exit.
+
+### Dependencies added
+
+Add `scikit-learn` to `requirements.txt`. No other new dependencies.
+
+### Phase 4b scorer (`evaluation/eval_scorer.py`)
+
+`EvalScorer(pipeline).score()` loads `eval_dataset.json`, calls `pipeline.retrieve(question)` for each item (no LLM call), compares retrieved chunk_ids against `relevant_chunk_ids`, and writes `eval_results.json` with per-question Recall@1/3/5, MRR, and a breakdown by difficulty.

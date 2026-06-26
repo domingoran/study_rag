@@ -266,6 +266,29 @@ class RAGPipeline:
     # Query                                                                #
     # ------------------------------------------------------------------ #
 
+    def retrieve(
+        self,
+        question: str,
+        top_k: int = config.TOP_K_FINAL,
+        expr: Optional[str] = None,
+    ) -> List[Chunk]:
+        """
+        Embed → hybrid search → rerank, returning top-K chunks without LLM generation.
+        Used by the evaluation scorer to avoid paying for an LLM call per question.
+        """
+        query_vec = self.embedder.embed_query(question)
+        candidates = self.hybrid_searcher.search(
+            query_embedding=query_vec,
+            query_text=question,
+            top_k=config.TOP_K_RERANK,
+            expr=expr,
+        )
+        if not candidates:
+            return []
+        if config.RERANKER_ENABLED and len(candidates) > top_k:
+            candidates = self.reranker.rerank(question, candidates)
+        return candidates[:top_k]
+
     def query(
         self,
         question: str,
