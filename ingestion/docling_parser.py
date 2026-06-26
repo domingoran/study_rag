@@ -37,6 +37,19 @@ from core.schemas import ParsedDocument, RawElement
 
 logger = logging.getLogger(__name__)
 
+# Docling loads ML models (layout detection, table structure) at construction
+# time. One converter is shared across all parse_pdf() calls in a process.
+_converter: DocumentConverter | None = None
+
+
+def _get_converter() -> DocumentConverter:
+    global _converter
+    if _converter is None:
+        logger.info("Loading Docling DocumentConverter …")
+        _converter = DocumentConverter()
+    return _converter
+
+
 # -------------------------------------------------------------------------
 # Author-extraction helpers
 # -------------------------------------------------------------------------
@@ -179,7 +192,7 @@ def parse_pdf(pdf_path: Path) -> ParsedDocument:
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     logger.info("Parsing: %s", pdf_path.name)
-    converter = DocumentConverter()
+    converter = _get_converter()
     result = converter.convert(str(pdf_path))
     doc = result.document
 

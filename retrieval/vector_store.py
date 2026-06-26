@@ -264,6 +264,42 @@ class VectorStore:
         logger.info("fetch_all_content: returned %d items.", len(items))
         return items
 
+    def fetch_all_embeddings(self) -> List[dict]:
+        """
+        Fetch chunk_id, paper_id, and embedding for every entity in the collection.
+
+        Used by EvalDatasetGenerator for clustering.  Paginates internally.
+
+        Returns:
+            List of {"chunk_id": str, "paper_id": str, "embedding": list[float]}.
+        """
+        items: List[dict] = []
+        batch_size = 1000
+        offset = 0
+
+        while True:
+            batch = self._client.query(
+                collection_name=config.MILVUS_COLLECTION,
+                filter='chunk_id != ""',
+                output_fields=["chunk_id", "paper_id", "embedding"],
+                limit=batch_size,
+                offset=offset,
+            )
+            if not batch:
+                break
+            for row in batch:
+                items.append({
+                    "chunk_id": row["chunk_id"],
+                    "paper_id": row["paper_id"],
+                    "embedding": row["embedding"],
+                })
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
+        logger.info("fetch_all_embeddings: returned %d items.", len(items))
+        return items
+
     def fetch_by_ids(self, chunk_ids: List[str]) -> List[Chunk]:
         """
         Fetch full Chunk objects for a list of chunk_ids.
@@ -296,6 +332,16 @@ class VectorStore:
         )
 
         return [self._row_to_chunk(row["chunk_id"], row) for row in rows]
+
+    def delete_paper(self, paper_id: str) -> int:
+        expr = f'paper_id == "{paper_id}"'
+        result = self._client.delete(
+            collection_name=config.MILVUS_COLLECTION,
+            filter=expr,
+        )
+        deleted = result.get("delete_count", 0) if isinstance(result, dict) else result
+        logger.info("Deleted %s chunks for paper_id='%s'.", deleted, paper_id)
+        return deleted
 
     def reset(self) -> None:
         """

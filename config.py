@@ -54,9 +54,9 @@ MAX_TABLE_MARKDOWN_CHARS: int = 6_000
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
-TOP_K_VECTOR: int = 10   # dense candidates fetched from Milvus
-TOP_K_BM25: int = 10     # sparse candidates fetched from BM25
-TOP_K_RERANK: int = 20   # merged candidates passed into the reranker
+TOP_K_VECTOR: int = 20   # dense candidates fetched from Milvus
+TOP_K_BM25: int = 20     # sparse candidates fetched from BM25
+TOP_K_RERANK: int = 10   # merged candidates passed into the reranker
 TOP_K_FINAL: int = 5     # top chunks shown to the LLM
 
 # Hybrid fusion weights (must sum to 1.0)
@@ -71,3 +71,15 @@ RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
 # Set to False to skip the reranking step (faster but lower quality)
 RERANKER_ENABLED: bool = True
+
+# ---------------------------------------------------------------------------
+# Evaluation — dataset generation (Phase 4a)
+# ---------------------------------------------------------------------------
+EVAL_DATASET_PATH: Path = BASE_DIR / "data" / "eval_dataset.json"
+EVAL_RESULTS_PATH: Path = BASE_DIR / "data" / "eval_results.json"
+EVAL_NUM_QUESTIONS: int = 50        # total Q&A pairs to generate
+EVAL_CLUSTER_K_MIN: int = 5         # min K for silhouette-score sweep
+EVAL_CLUSTER_K_MAX: int = 35        # max K for silhouette-score sweep
+EVAL_CHUNKS_PER_GROUP: int = 4      # chunks per LLM call (1 seed + 3 neighbours)
+EVAL_QUESTIONS_PER_GROUP: int = 3   # Q&A pairs generated per chunk group
+EVAL_LLM_MODEL: str = OLLAMA_CHAT_MODEL  # override here to use a different model
