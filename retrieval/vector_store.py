@@ -243,23 +243,22 @@ class VectorStore:
         """
         items: List[tuple] = []
         batch_size = 1000
-        offset = 0
 
-        while True:
-            batch = self._client.query(
-                collection_name=config.MILVUS_COLLECTION,
-                filter='chunk_id != ""',
-                output_fields=["chunk_id", "content"],
-                limit=batch_size,
-                offset=offset,
-            )
-            if not batch:
-                break
-            for row in batch:
-                items.append((row["chunk_id"], row["content"]))
-            if len(batch) < batch_size:
-                break
-            offset += batch_size
+        iterator = self._client.query_iterator(
+            collection_name=config.MILVUS_COLLECTION,
+            filter='chunk_id != ""',
+            output_fields=["chunk_id", "content"],
+            batch_size=batch_size,
+        )
+        try:
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                for row in batch:
+                    items.append((row["chunk_id"], row["content"]))
+        finally:
+            iterator.close()
 
         logger.info("fetch_all_content: returned %d items.", len(items))
         return items
@@ -275,27 +274,26 @@ class VectorStore:
         """
         items: List[dict] = []
         batch_size = 1000
-        offset = 0
 
-        while True:
-            batch = self._client.query(
-                collection_name=config.MILVUS_COLLECTION,
-                filter='chunk_id != ""',
-                output_fields=["chunk_id", "paper_id", "embedding"],
-                limit=batch_size,
-                offset=offset,
-            )
-            if not batch:
-                break
-            for row in batch:
-                items.append({
-                    "chunk_id": row["chunk_id"],
-                    "paper_id": row["paper_id"],
-                    "embedding": row["embedding"],
-                })
-            if len(batch) < batch_size:
-                break
-            offset += batch_size
+        iterator = self._client.query_iterator(
+            collection_name=config.MILVUS_COLLECTION,
+            filter='chunk_id != ""',
+            output_fields=["chunk_id", "paper_id", "embedding"],
+            batch_size=batch_size,
+        )
+        try:
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                for row in batch:
+                    items.append({
+                        "chunk_id": row["chunk_id"],
+                        "paper_id": row["paper_id"],
+                        "embedding": row["embedding"],
+                    })
+        finally:
+            iterator.close()
 
         logger.info("fetch_all_embeddings: returned %d items.", len(items))
         return items

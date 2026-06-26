@@ -234,7 +234,10 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
             return
 
         words_per_chunk = max(1, int(config.CHUNK_MAX_TOKENS * 0.75))
+        # Overlap must be strictly smaller than the chunk size, otherwise
+        # `start = end - overlap_words` fails to advance and loops forever.
         overlap_words   = max(0, int(config.CHUNK_OVERLAP_TOKENS * 0.75))
+        overlap_words   = min(overlap_words, words_per_chunk - 1)
         start = 0
         while start < len(word_pages):
             end   = min(start + words_per_chunk, len(word_pages))
