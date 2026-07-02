@@ -168,12 +168,17 @@ class Chunk(BaseModel):
 `chunk_document(parsed_doc) → list[Chunk]`
 
 * **Section headers** → flush text buffer, update current section label
+* **References / bibliography headers** → flush, then drop everything under them until the next non-matching header (`EXCLUDE_SECTION_RE`, improvement #15)
 * **Text / list_item / paragraph** → accumulate in buffer
 * **Table** → flush buffer → standalone chunk with smart context stitching (Phase 3)
 * **Figure** → standalone chunk; no-caption figures kept when context exists (Phase 3)
 * **Formula** → standalone equation chunk with context stitching (Phase 3)
-* Long text buffers are word-split with overlap (`CHUNK_MAX_TOKENS`, `CHUNK_OVERLAP_TOKENS`)
+* Text buffers are split **boundary-aware** (improvement #1): packed sentence by sentence, closing at a paragraph boundary once `CHUNK_IDEAL_TOKENS` is reached, or at a sentence boundary if `CHUNK_MAX_TOKENS` is hit first — never mid-sentence. `CHUNK_OVERLAP_TOKENS` of trailing whole sentences carry into the next chunk.
 * Max content stored in Milvus VARCHAR: **8 000 chars**
+
+#### Breadcrumb embedding context (#4) — `[BREADCRUMB]`
+
+`chunker.build_embedding_text(chunk)` prepends a `Paper: … / Section: …` header to a chunk **only for embedding** (called from `core/pipeline.py` at embed time). The header is never written into `chunk.content`, so it stays out of Milvus, the BM25 index, and the LLM citation context — it only steers the dense vector. Toggle with `EMBED_BREADCRUMB`; grep `[BREADCRUMB]` to find every touch point.
 
 #### Phase 3 context stitching
 
@@ -568,9 +573,19 @@ MILVUS_COLLECTION = "academic_chunks"
 OLLAMA_BASE_URL   = "http://localhost:11434"
 OLLAMA_CHAT_MODEL = "llama3.1"
 
-# Chunking
-CHUNK_MAX_TOKENS     = 512
-CHUNK_OVERLAP_TOKENS = 50
+# Chunking — boundary-aware splitting (#1)
+CHUNK_MIN_TOKENS     = 250   # trailing chunk may fall below this
+CHUNK_IDEAL_TOKENS   = 450   # target size; start seeking a boundary here
+CHUNK_MAX_TOKENS     = 512   # hard ceiling; force a sentence-boundary cut
+CHUNK_OVERLAP_TOKENS = 50    # carried over as whole trailing sentences
+
+# Drop reference/bibliography sections during chunking (#15)
+EXCLUDE_SECTION_RE = r"^\s*(references|bibliography|works\s+cited)\b"
+
+# Breadcrumb embedding context (#4) — [BREADCRUMB]
+# Prepends "Paper: … / Section: …" to each chunk *for embedding only*;
+# never stored in content / BM25 / LLM context. Grep "[BREADCRUMB]".
+EMBED_BREADCRUMB = True
 
 # Retrieval — candidate counts
 TOP_K_VECTOR = 10    # dense candidates from Milvus

@@ -23,7 +23,7 @@ from tqdm import tqdm
 import config
 from core.schemas import Chunk
 from embeddings.embedder import Embedder
-from ingestion.chunker import chunk_document
+from ingestion.chunker import build_embedding_text, chunk_document
 from ingestion.docling_parser import parse_pdf
 from ingestion.metadata_builder import build_metadata
 from llm.chat_engine import ChatEngine
@@ -150,8 +150,10 @@ class RAGPipeline:
             return 0
 
         # 4. Embed
+        # [BREADCRUMB] (#4) embed a "Paper / Section" header + content, but keep
+        # chunk.content (stored in Milvus / BM25 / LLM context) breadcrumb-free.
         print(f"  🔢 Embedding {len(chunks)} chunks …")
-        texts = [c.content for c in chunks]
+        texts = [build_embedding_text(c) for c in chunks]
         embeddings = self.embedder.embed_passages(texts)
         for chunk, emb in zip(chunks, embeddings):
             chunk.embedding = emb

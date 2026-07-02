@@ -66,6 +66,62 @@ _MAX_CONTENT_CHARS = 8_000
 # Regex that matches the separator row of a Markdown table: |---|---|
 _TABLE_SEP_RE = re.compile(r'\|[-| :]+\|\s*\n')
 
+# Sentence boundary splitter for boundary-aware chunking (#1). Splits after
+# ., !, or ? followed by whitespace, then merges back any piece that ended on a
+# known abbreviation (config.SENTENCE_ABBREVIATIONS) so "et al. Smith" stays whole.
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def _split_sentences(text: str) -> List[str]:
+    """
+    Split *text* into sentences, keeping abbreviations intact.
+
+    The regex over-splits on abbreviation periods ("et al.", "e.g."); we repair
+    that with a single pass that checks only the *last token* of each candidate
+    sentence against config.SENTENCE_ABBREVIATIONS (one set lookup per sentence —
+    negligible cost) and merges the fragment back into the previous sentence.
+    """
+    pieces = [p.strip() for p in _SENTENCE_RE.split(text) if p.strip()]
+    merged: List[str] = []
+    for piece in pieces:
+        if merged:
+            # Strip leading brackets/quotes so "(cf." matches "cf.".
+            last_token = merged[-1].rsplit(None, 1)[-1].lower().lstrip("([{<\"'")
+            if last_token in config.SENTENCE_ABBREVIATIONS:
+                merged[-1] = f"{merged[-1]} {piece}"
+                continue
+        merged.append(piece)
+    return merged
+
+# Section headers whose subtree is dropped as retrieval noise (#15).
+_EXCLUDE_SECTION_RE = re.compile(config.EXCLUDE_SECTION_RE, re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# [BREADCRUMB] Embedding-only breadcrumb context (improvement #4)
+# ---------------------------------------------------------------------------
+# build_embedding_text() returns the string that should be *embedded* for a
+# chunk: a short "Paper / Section" header prepended to the chunk content. The
+# header is NOT written back into chunk.content, so it never reaches Milvus,
+# the BM25 index, or the LLM citation context — it only biases the dense vector.
+#
+# Called from core/pipeline.py at embed time. To disable, set
+# config.EMBED_BREADCRUMB = False (or grep "[BREADCRUMB]" to find every touch
+# point if you want to iterate on the format).
+def build_embedding_text(chunk: "Chunk") -> str:
+    """Compose the embed-only text for *chunk* (breadcrumb header + content)."""
+    if not config.EMBED_BREADCRUMB:
+        return chunk.content
+
+    lines: List[str] = []
+    if chunk.title:
+        lines.append(f"Paper: {chunk.title}")
+    if chunk.section:
+        lines.append(f"Section: {chunk.section}")
+    if not lines:
+        return chunk.content
+    return "\n".join(lines) + "\n---\n" + chunk.content
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -195,6 +251,10 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
     figure_counter   = 0
     equation_counter = 0
 
+    # (#15) True while iterating under a references/bibliography header; all
+    # content in such a section is dropped until the next non-excluded header.
+    in_excluded_section = False
+
     elements   = parsed_doc.elements
     n_elements = len(elements)
 
@@ -221,36 +281,72 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
         )
 
     def _flush_text_buffer(section: str, fallback_page: int) -> None:
+        """
+        Emit the accumulated text buffer as one or more chunks using
+        boundary-aware splitting (improvement #1):
+
+          • Text is split into sentences; the final sentence of each source
+            element marks a paragraph boundary.
+          • A chunk grows until it reaches CHUNK_IDEAL_TOKENS, then closes at the
+            next paragraph boundary. If CHUNK_MAX_TOKENS is hit first it closes
+            at the current sentence boundary instead — never mid-sentence.
+          • CHUNK_OVERLAP_TOKENS worth of trailing whole sentences are carried
+            into the next chunk as semantic overlap.
+        """
         nonlocal text_buffer
         if not text_buffer:
             return
-        # Flatten to (word, page) pairs preserving per-element page numbers.
-        word_pages: List[tuple[str, int]] = []
+
+        # Build sentence units: (sentence, page, is_paragraph_end).
+        units: List[tuple[str, int, bool]] = []
         for text, pg in text_buffer:
-            for word in text.split():
-                word_pages.append((word, pg))
+            sentences = _split_sentences(text)
+            for k, sent in enumerate(sentences):
+                units.append((sent, pg, k == len(sentences) - 1))
         text_buffer = []
-        if not word_pages:
+        if not units:
             return
 
-        words_per_chunk = max(1, int(config.CHUNK_MAX_TOKENS * 0.75))
-        # Overlap must be strictly smaller than the chunk size, otherwise
-        # `start = end - overlap_words` fails to advance and loops forever.
-        overlap_words   = max(0, int(config.CHUNK_OVERLAP_TOKENS * 0.75))
-        overlap_words   = min(overlap_words, words_per_chunk - 1)
-        start = 0
-        while start < len(word_pages):
-            end   = min(start + words_per_chunk, len(word_pages))
-            pairs = word_pages[start:end]
-            sub   = " ".join(w for w, _ in pairs).strip()
-            pg    = pairs[0][1] if pairs[0][1] else fallback_page
-            if sub:
-                chunks.append(_make_chunk("text", sub, section, pg))
-            if end == len(word_pages):
-                break
-            start = end - overlap_words
-            if start < 0:
-                start = 0
+        # Word budgets (1 token ≈ 0.75 words).
+        ideal_words   = max(1, int(config.CHUNK_IDEAL_TOKENS * 0.75))
+        max_words     = max(ideal_words, int(config.CHUNK_MAX_TOKENS * 0.75))
+        overlap_words = max(0, int(config.CHUNK_OVERLAP_TOKENS * 0.75))
+        # Overlap must stay strictly below max so packing always makes progress.
+        overlap_words = min(overlap_words, max_words - 1)
+
+        def _emit(buf: List[tuple[str, int]]) -> None:
+            sub = " ".join(s for s, _ in buf).strip()
+            if not sub:
+                return
+            pg = buf[0][1] or fallback_page
+            chunks.append(_make_chunk("text", sub, section, pg))
+
+        current: List[tuple[str, int]] = []   # (sentence, page)
+        current_words   = 0
+        new_since_flush = False               # guards against overlap-only chunks
+        for sent, pg, para_end in units:
+            current.append((sent, pg))
+            current_words += len(sent.split())
+            new_since_flush = True
+
+            if current_words >= max_words or (current_words >= ideal_words and para_end):
+                _emit(current)
+                # Carry trailing whole sentences forward as semantic overlap.
+                overlap: List[tuple[str, int]] = []
+                ow = 0
+                for s, p in reversed(current):
+                    sw = len(s.split())
+                    if ow + sw > overlap_words:
+                        break
+                    overlap.insert(0, (s, p))
+                    ow += sw
+                current         = overlap
+                current_words   = ow
+                new_since_flush = False
+
+        # Flush remainder — unless it is purely carried-over overlap.
+        if current and new_since_flush:
+            _emit(current)
 
     # ---------------------------------------------------------------------- #
     # Main loop                                                               #
@@ -262,11 +358,23 @@ def chunk_document(parsed_doc: ParsedDocument) -> List[Chunk]:
 
         # ---------------------------------------------------------------- #
         # Section header → flush buffer, update running section            #
+        # A references/bibliography header (#15) toggles exclusion: its     #
+        # content is dropped until the next non-matching header.            #
         # ---------------------------------------------------------------- #
         if elem.label in _SECTION_LABELS:
             _flush_text_buffer(current_section, page)
-            if elem.text:
-                current_section = elem.text.strip()
+            header = elem.text.strip() if elem.text else ""
+            if header and _EXCLUDE_SECTION_RE.search(header):
+                in_excluded_section = True
+                current_section = header
+                continue
+            in_excluded_section = False
+            if header:
+                current_section = header
+            continue
+
+        # Inside an excluded (references) section — skip all non-header items.
+        if in_excluded_section:
             continue
 
         # ---------------------------------------------------------------- #

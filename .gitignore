@@ -24,7 +24,7 @@ data/eval_seeds.csv
 data/eval_cluster_assignments.csv
 data/eval_pairs_raw.jsonl
 data/eval_results.json
-
+data/eval_report_v2.md
 # Milvus local volumes (Docker bind-mount)
 volumes/
 
@@ -44,3 +44,6 @@ Thumbs.db
 # Environment files
 .env
 .env.*
+
+
+IMPROVEMENTS.md

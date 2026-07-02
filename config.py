@@ -41,8 +41,15 @@ OLLAMA_CHAT_MODEL: str = "llama3.1"  # change to any model pulled in Ollama
 # Chunking
 # ---------------------------------------------------------------------------
 # Approximate token budget per chunk (1 token ≈ 0.75 words in English).
-CHUNK_MAX_TOKENS: int = 512
-CHUNK_OVERLAP_TOKENS: int = 50
+#
+# Boundary-aware splitting (improvement #1): text buffers are packed sentence
+# by sentence. A chunk grows until it reaches CHUNK_IDEAL_TOKENS, then closes at
+# the next paragraph boundary; if none arrives before CHUNK_MAX_TOKENS it closes
+# at the current sentence boundary instead. This avoids cutting mid-sentence.
+CHUNK_MIN_TOKENS: int = 250      # below this a trailing chunk is acceptable but not forced
+CHUNK_IDEAL_TOKENS: int = 450    # target size; chunk starts looking for a boundary here
+CHUNK_MAX_TOKENS: int = 512      # hard ceiling; force a sentence-boundary cut at/above this
+CHUNK_OVERLAP_TOKENS: int = 50   # carried over as whole trailing sentences (semantic overlap)
 
 # Phase 3 — context stitching for non-text chunks (tables, figures, equations).
 # Words of surrounding prose stitched in before and after each non-text element.
@@ -50,6 +57,32 @@ CONTEXT_WORDS: int = 50
 # Table Markdown is capped at this many chars before context is appended,
 # ensuring context snippets are never silently cut by the Milvus VARCHAR limit.
 MAX_TABLE_MARKDOWN_CHARS: int = 6_000
+
+# Abbreviations that end in a period but do NOT end a sentence. The boundary-aware
+# splitter (#1) checks only the last token of each candidate sentence against this
+# set (one lowercased lookup per sentence — negligible cost) and merges the split
+# back when it matches, so "et al. Smith (2017)" stays one sentence. Lowercase,
+# trailing dot included.
+SENTENCE_ABBREVIATIONS: frozenset[str] = frozenset({
+    "al.", "e.g.", "i.e.", "cf.", "etc.", "vs.", "viz.", "no.", "nos.",
+    "fig.", "figs.", "eq.", "eqs.", "ref.", "refs.", "sec.", "secs.",
+    "ch.", "pp.", "approx.", "resp.", "dr.", "prof.", "mr.", "mrs.", "ms.",
+    "st.", "ca.", "vol.", "ed.", "eds.", "tab.", "thm.", "def.", "prop.",
+})
+
+# Improvement #15 — reference/bibliography sections are retrieval noise and are
+# dropped during chunking. A section header whose text matches this pattern (and
+# everything under it, until the next non-matching header) is skipped entirely.
+EXCLUDE_SECTION_RE: str = r"^\s*(references|bibliography|works\s+cited)\b"
+
+# ---------------------------------------------------------------------------
+# Breadcrumb embedding context (improvement #4) — [BREADCRUMB]
+# ---------------------------------------------------------------------------
+# When True, a "Paper: … / Section: …" header is prepended to each chunk *only
+# for embedding*. It is NOT stored in `content`, so it never appears in the
+# LLM's citation context or the BM25 index — it only steers the dense vector.
+# Grep for "[BREADCRUMB]" to find every line involved in this feature.
+EMBED_BREADCRUMB: bool = True
 
 # ---------------------------------------------------------------------------
 # Retrieval
