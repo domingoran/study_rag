@@ -1,7 +1,7 @@
-# Academic RAG
+# Local RAG
 
-A **local-first Retrieval-Augmented Generation system** for academic PDF papers.  
-Ask questions about your paper library and get cited answers — no cloud APIs required.
+A **local-first Retrieval-Augmented Generation system** for PDF documents.  
+Ask questions about your document library and get cited answers — no cloud APIs required.
 
 ---
 
@@ -92,7 +92,7 @@ docker compose up -d
 > **WSL2 users:** volumes are stored at `~/milvus-volumes/` (WSL home).  
 > Do **not** change this to `/mnt/c/` — MinIO requires fast local storage.
 
-### 3. Add papers
+### 3. Add documents
 
 **Option A — download from arXiv automatically:**
 
@@ -113,7 +113,7 @@ The filename stem becomes the `paper_id` (e.g. `attention_is_all_you_need.pdf`).
 python main.py --ingest
 ```
 
-Already-ingested papers are skipped. The BM25 index is rebuilt automatically after ingestion.
+Already-ingested documents are skipped. The BM25 index is rebuilt automatically after ingestion.
 
 ### 5. Chat
 
@@ -123,16 +123,35 @@ python main.py
 
 ---
 
-## CLI Commands
+## Command-line flags
+
+Run `python main.py [flag]`:
+
+| Flag | Description |
+|---|---|
+| _(none)_ | Start the interactive chat |
+| `--ingest` | Ingest all PDFs from `data/papers/` into the vector store |
+| `--ingest-file <PDF>` | Ingest a single PDF file into the vector store |
+| `--chat` | Start the interactive chat after ingestion (use with `--ingest`) |
+| `--eval-generate` | Generate an evaluation Q&A dataset from the indexed chunks |
+| `--manual-generator` | Run clustering + seed selection, then print each chunk group with the system prompt for manual Q&A generation via an external model |
+| `--eval-score` | Score retrieval quality against `data/eval_dataset.json` (Recall@K, MRR) **and** generate LLM answers for comparison |
+| `--eval-retrieve` | Score retrieval quality (Recall@K, MRR) without LLM answer generation |
+
+---
+
+## In-chat commands
 
 | Command | Description |
 |---|---|
 | `/reset` | Clear conversation history |
 | `/count` | Show number of indexed chunks |
+| `/chunk <chunk_id>` | Show the full stored content + metadata of a single chunk |
 | `/bm25` | Rebuild BM25 index from current Milvus data |
 | `/filter <expr>` | Set a Milvus scalar filter (shown in prompt while active) |
 | `/filter clear` | Remove the active filter |
-| `/delete` | Wipe the vector store and BM25 index (**asks for confirmation**) |
+| `/delete <paper_id>` | Delete all chunks for one paper, then rebuild BM25 (**asks for confirmation**) |
+| `/delete` | Wipe the entire vector store and BM25 index (**asks for confirmation**) |
 | `/quit` | Exit (also: `exit`, `q`) |
 
 ### Filter examples
