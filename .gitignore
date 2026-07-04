@@ -20,6 +20,8 @@ data/bm25_index.pkl
 data/eval_report.md
 data/metadata.json
 data/eval_dataset.json
+data/eval_results_2.json
+data/eval_judge_results_2.json
 data/eval_seeds.csv
 data/eval_cluster_assignments.csv
 data/eval_pairs_raw.jsonl
@@ -47,3 +49,5 @@ Thumbs.db
 
 
 IMPROVEMENTS.md
+
+output/*
