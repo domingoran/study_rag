@@ -84,6 +84,9 @@ class EvalScorer:
                 retrieved_chunks = self._pipeline.retrieve(question, top_k=top_k)
                 generated_answer = ""
             else:
+                # Each eval question is independent — clear conversation history so
+                # answer N is not conditioned on the previous questions' turns.
+                self._pipeline.chat_engine.reset()
                 generated_answer, retrieved_chunks = self._pipeline.query(question, top_k=top_k)
 
             retrieved_ids = [c.chunk_id for c in retrieved_chunks]
