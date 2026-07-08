@@ -16,15 +16,7 @@ downloadd_papers.py
 # Data — papers and generated indices are local only
 data/papers/*
 !data/papers/__init__.py
-data/bm25_index.pkl
-data/eval_report.md
-data/metadata.json
-data/eval_dataset.json
-data/eval_seeds.csv
-data/eval_cluster_assignments.csv
-data/eval_pairs_raw.jsonl
-data/eval_results.json
-data/eval_report_v2.md
+data/*
 # Milvus local volumes (Docker bind-mount)
 volumes/
 
@@ -47,3 +39,5 @@ Thumbs.db
 
 
 IMPROVEMENTS.md
+
+output/*

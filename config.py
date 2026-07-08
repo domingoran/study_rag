@@ -116,3 +116,16 @@ EVAL_CLUSTER_K_MAX: int = 35        # max K for silhouette-score sweep
 EVAL_CHUNKS_PER_GROUP: int = 4      # chunks per LLM call (1 seed + 3 neighbours)
 EVAL_QUESTIONS_PER_GROUP: int = 3   # Q&A pairs generated per chunk group
 EVAL_LLM_MODEL: str = OLLAMA_CHAT_MODEL  # override here to use a different model
+
+# ---------------------------------------------------------------------------
+# Evaluation — LLM-as-a-judge (answer quality)
+# ---------------------------------------------------------------------------
+# The judge scores generated answers on a 1-5 scale across five metrics
+# (correctness, completeness, answer_relevance, faithfulness, citation_quality).
+# It MUST be a different model from the answer generator (OLLAMA_CHAT_MODEL) to
+# avoid self-preference bias — llama3.1 generates, qwen3 judges.
+EVAL_JUDGE_MODEL: str = "qwen3:latest"
+# Input: the results file produced by  --eval-score  (must contain generated answers).
+EVAL_JUDGE_INPUT_PATH: Path = BASE_DIR / "data" / "eval_results.json"
+# Output: per-question and aggregate judge scores.
+EVAL_JUDGE_RESULTS_PATH: Path = BASE_DIR / "data" / "eval_judge_results.json"

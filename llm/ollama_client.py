@@ -57,26 +57,50 @@ class OllamaClient:
         response = self._client.chat(model=self.model, messages=messages)
         return response.message.content
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        think: bool | None = None,
+    ) -> str:
         """
         One-shot text generation (no message history).
 
         Args:
             prompt: Raw prompt string.
+            model:  Optional per-call model override (defaults to self.model).
+                    Lets callers reuse one client for e.g. an LLM-as-a-judge model.
+            think:  Optional thinking toggle for reasoning models (e.g. qwen3).
+                    Pass False to suppress <think> blocks and speed up structured
+                    output. Ignored gracefully on SDK/model versions that lack it.
 
         Returns:
             Generated text as a plain string.
         """
-        response = self._client.generate(model=self.model, prompt=prompt)
+        kwargs = {"model": model or self.model, "prompt": prompt}
+        if think is not None:
+            try:
+                response = self._client.generate(think=think, **kwargs)
+                return response.response
+            except (TypeError, ollama.ResponseError) as exc:
+                # Older SDK (no `think` kwarg) or a model that doesn't support
+                # thinking — retry without it rather than failing the run.
+                logger.debug("generate(think=%s) unsupported (%s); retrying plain", think, exc)
+        response = self._client.generate(**kwargs)
         return response.response
 
-    def is_available(self) -> bool:
-        """Return True if the Ollama server is reachable and the model exists."""
+    def is_available(self, model: str | None = None) -> bool:
+        """Return True if the Ollama server is reachable and the model exists.
+
+        Args:
+            model: Optional model to check instead of self.model (e.g. the judge model).
+        """
+        target = model or self.model
         try:
             models = self._client.list()
             names = [m.model for m in models.models]
             # Accept both exact match and prefix match (e.g. "llama3.1" matches "llama3.1:latest")
-            return any(self.model in n or n.startswith(self.model) for n in names)
+            return any(target in n or n.startswith(target) for n in names)
         except Exception as exc:
             logger.warning("Ollama availability check failed: %s", exc)
             return False

@@ -21,6 +21,7 @@ from typing import Optional
 import config
 from core.pipeline import RAGPipeline
 from evaluation.eval_dataset_generator import EvalDatasetGenerator
+from evaluation.eval_judge import EvalJudge
 from evaluation.eval_scorer import EvalScorer
 
 # ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@ logging.getLogger("rag_study").setLevel(logging.INFO)
 
 BANNER = """\
 ╔══════════════════════════════════════════╗
-║       RAG Study — Academic Paper Q&A    ║
+║       RAG Study — Documents Q&A          ║
 ╚══════════════════════════════════════════╝
 Model : {model}
 Store : {host}:{port}  collection={collection}
@@ -57,6 +58,28 @@ def run_eval_score(pipeline: RAGPipeline, retrieve_only: bool = False) -> None:
     print(f"\n=== {label} ===")
     scorer = EvalScorer(pipeline)
     scorer.score(retrieve_only=retrieve_only)
+
+
+def run_eval_judge(pipeline: RAGPipeline) -> None:
+    print("\n=== LLM-as-a-Judge Answer Evaluation ===")
+    if not pipeline.ollama_client.is_available(config.EVAL_JUDGE_MODEL):
+        print(
+            f"⚠  Judge model '{config.EVAL_JUDGE_MODEL}' not found on Ollama.\n"
+            f"   Run:  ollama pull {config.EVAL_JUDGE_MODEL}"
+        )
+        return
+    judge = EvalJudge(pipeline.vector_store, pipeline.ollama_client)
+    try:
+        summary = judge.judge()
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"⚠  {exc}")
+        return
+    print(
+        f"\nSummary:\n"
+        f"  Answers judged : {summary['total_judged']}\n"
+        f"  Overall score  : {summary['overall']}  (scale 1-5)\n"
+        f"  Output         : {summary['output_path']}"
+    )
 
 
 def run_eval_generate(pipeline: RAGPipeline) -> None:
@@ -285,11 +308,20 @@ def main() -> None:
         action="store_true",
         help="Score retrieval quality (Recall@K, MRR) without LLM answer generation.",
     )
+    parser.add_argument(
+        "--eval-judge",
+        action="store_true",
+        help="Run LLM-as-a-judge on data/eval_results.json — score answer quality\n"
+             "(correctness, completeness, relevance, faithfulness, citations) with a\n"
+             "separate judge model. Requires --eval-score to have run first.",
+    )
     args = parser.parse_args()
 
     pipeline = RAGPipeline()
 
-    if args.eval_retrieve:
+    if args.eval_judge:
+        run_eval_judge(pipeline)
+    elif args.eval_retrieve:
         run_eval_score(pipeline, retrieve_only=True)
     elif args.eval_score:
         run_eval_score(pipeline)
