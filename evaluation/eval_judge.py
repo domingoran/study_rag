@@ -97,21 +97,27 @@ def _extract_json_object(text: str) -> Optional[dict]:
     cleaned = _strip_thinking(text).strip()
     # Fast path: whole response is JSON.
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
     # Strip markdown code fences if present.
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
     if fenced:
         try:
-            return json.loads(fenced.group(1))
+            parsed = json.loads(fenced.group(1))
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
     # Fallback: outermost brace span.
     start, end = cleaned.find("{"), cleaned.rfind("}")
     if start != -1 and end > start:
         try:
-            return json.loads(cleaned[start : end + 1])
+            parsed = json.loads(cleaned[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             return None
     return None
@@ -120,7 +126,7 @@ def _extract_json_object(text: str) -> Optional[dict]:
 def _coerce_score(raw) -> Optional[int]:
     """Clamp a judge score to the [SCORE_MIN, SCORE_MAX] integer range, or None."""
     try:
-        val = int(round(float(raw)))
+        val = round(float(raw))
     except (TypeError, ValueError):
         return None
     return max(SCORE_MIN, min(SCORE_MAX, val))
@@ -329,7 +335,7 @@ class EvalJudge:
         def fmt(v):
             return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
 
-        for metric in METRICS + ["overall"]:
+        for metric in [*METRICS, "overall"]:
             label = metric.replace("_", " ")
             line = f"  {label:<20} {fmt(aggregate[metric]['mean']):>10}"
             for d in diffs:

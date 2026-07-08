@@ -62,8 +62,18 @@ def run_eval_score(pipeline: RAGPipeline, retrieve_only: bool = False) -> None:
 
 def run_eval_judge(pipeline: RAGPipeline) -> None:
     print("\n=== LLM-as-a-Judge Answer Evaluation ===")
+    if not pipeline.ollama_client.is_available(config.EVAL_JUDGE_MODEL):
+        print(
+            f"⚠  Judge model '{config.EVAL_JUDGE_MODEL}' not found on Ollama.\n"
+            f"   Run:  ollama pull {config.EVAL_JUDGE_MODEL}"
+        )
+        return
     judge = EvalJudge(pipeline.vector_store, pipeline.ollama_client)
-    summary = judge.judge()
+    try:
+        summary = judge.judge()
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"⚠  {exc}")
+        return
     print(
         f"\nSummary:\n"
         f"  Answers judged : {summary['total_judged']}\n"

@@ -89,13 +89,18 @@ class OllamaClient:
         response = self._client.generate(**kwargs)
         return response.response
 
-    def is_available(self) -> bool:
-        """Return True if the Ollama server is reachable and the model exists."""
+    def is_available(self, model: str | None = None) -> bool:
+        """Return True if the Ollama server is reachable and the model exists.
+
+        Args:
+            model: Optional model to check instead of self.model (e.g. the judge model).
+        """
+        target = model or self.model
         try:
             models = self._client.list()
             names = [m.model for m in models.models]
             # Accept both exact match and prefix match (e.g. "llama3.1" matches "llama3.1:latest")
-            return any(self.model in n or n.startswith(self.model) for n in names)
+            return any(target in n or n.startswith(target) for n in names)
         except Exception as exc:
             logger.warning("Ollama availability check failed: %s", exc)
             return False
